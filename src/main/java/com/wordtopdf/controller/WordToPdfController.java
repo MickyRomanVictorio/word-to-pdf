@@ -1,92 +1,75 @@
 package com.wordtopdf.controller;
-
-import com.lowagie.text.*;
-import com.lowagie.text.pdf.PdfWriter;
-import org.apache.poi.xwpf.usermodel.XWPFDocument;
-import org.springframework.http.HttpHeaders;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-
 import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 @RestController
 @RequestMapping("/api/conversion")
 public class WordToPdfController {
-    
-    // Ruta que devuelve el archivo convertido en bytes
-    @PostMapping("/word-to-pdf-bytes")
-    public ResponseEntity<byte[]> convertWordToPdfBytes(@RequestParam("file") MultipartFile file) {
-        if (file.isEmpty() || !file.getOriginalFilename().endsWith(".docx")) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(null);
+
+    @PostMapping("/word-to-pdf")
+    public ResponseEntity<?> convertWordToPdf(@RequestParam("file") MultipartFile wordFile) {
+        if (wordFile == null || wordFile.isEmpty()) {
+            return ResponseEntity.badRequest().body("No se ha subido ningún archivo.");
         }
 
-        try (InputStream inputStream = file.getInputStream();
-             XWPFDocument document = new XWPFDocument(inputStream);
-             ByteArrayOutputStream pdfOutputStream = new ByteArrayOutputStream()) {
+        // Rutas temporales para guardar los archivos
+        String inputFileName = wordFile.getOriginalFilename();
+        if (inputFileName == null) {
+            return ResponseEntity.badRequest().body("Nombre de archivo no válido.");
+        }
 
-            Document pdfDocument = new Document();
-            PdfWriter.getInstance(pdfDocument, pdfOutputStream);
-            pdfDocument.open();
+        Path inputFilePath = Paths.get(System.getProperty("java.io.tmpdir"), inputFileName);
+        Path outputFilePath = Paths.get(System.getProperty("java.io.tmpdir"), inputFileName.replaceAll("\\.\\w+$", ".pdf"));
 
-            document.getParagraphs().forEach(paragraph -> {
-                try {
-                    pdfDocument.add(new Paragraph(paragraph.getText()));
-                } catch (DocumentException e) {
-                    e.printStackTrace();
-                }
-            });
+        try {
+            // Guardar el archivo temporalmente
+            Files.write(inputFilePath, wordFile.getBytes());
 
-            pdfDocument.close();
+            // Ruta de instalación de LibreOffice
+            String libreOfficePath = "C:\\Program Files\\LibreOffice\\program\\soffice.exe";
+            String[] command = {
+                libreOfficePath,
+                "--headless",
+                "--convert-to", "pdf",
+                "--outdir", inputFilePath.getParent().toString(),
+                inputFilePath.toString()
+            };
 
+            // Ejecutar LibreOffice
+            Process process = new ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start();
+
+            // Esperar a que el proceso termine
+            process.waitFor();
+
+            // Verificar si se generó el archivo PDF
+            if (!Files.exists(outputFilePath)) {
+                throw new IOException("Error al generar el archivo PDF.");
+            }
+
+            // Leer el archivo PDF y devolverlo al cliente
+            byte[] pdfBytes = Files.readAllBytes(outputFilePath);
+            Files.delete(inputFilePath); // Eliminar archivo de entrada temporal
+            Files.delete(outputFilePath); // Eliminar archivo PDF temporal
+
+            ByteArrayResource resource = new ByteArrayResource(pdfBytes);
             return ResponseEntity.ok()
-                    .contentType(MediaType.APPLICATION_PDF)
-                    .header("Content-Disposition", "attachment; filename=converted.pdf")
-                    .body(pdfOutputStream.toByteArray());
-        } catch (IOException e) {
-            e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
+                    .header("Content-Disposition", "attachment; filename=documento.pdf")
+                    .contentType(org.springframework.http.MediaType.APPLICATION_PDF)
+                    .body(resource);
+
+        } catch (Exception ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error: " + ex.getMessage());
         }
     }
 
-    // Ruta que devuelve el archivo convertido en bits (stream de datos binarios)
-    @PostMapping("/word-to-pdf-bits")
-    public ResponseEntity<InputStream> convertWordToPdfBits(@RequestParam("file") MultipartFile file) {
-        if (file.isEmpty() || !file.getOriginalFilename().endsWith(".docx")) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
-        }
-
-        try (InputStream inputStream = file.getInputStream();
-             XWPFDocument document = new XWPFDocument(inputStream);
-             ByteArrayOutputStream pdfOutputStream = new ByteArrayOutputStream()) {
-
-            Document pdfDocument = new Document();
-            PdfWriter.getInstance(pdfDocument, pdfOutputStream);
-            pdfDocument.open();
-
-            document.getParagraphs().forEach(paragraph -> {
-                try {
-                    pdfDocument.add(new Paragraph(paragraph.getText()));
-                } catch (DocumentException e) {
-                    e.printStackTrace();
-                }
-            });
-
-            pdfDocument.close();
-
-            // Convertir el contenido del ByteArrayOutputStream a un InputStream
-            InputStream pdfInputStream = new ByteArrayInputStream(pdfOutputStream.toByteArray());
-
-            // Retornar el stream como una respuesta de bits (sin cuerpo de la respuesta)
-            return ResponseEntity.ok()
-                    .contentType(MediaType.APPLICATION_PDF)
-                    .header("Content-Disposition", "attachment; filename=converted.pdf")
-                    .body(pdfInputStream); // Retornar un InputStream como respuesta (stream de bits)
-        } catch (IOException e) {
-            e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
-    }
 }
